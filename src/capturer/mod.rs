@@ -111,7 +111,16 @@ impl Capturer {
             return Err(CapturerBuildError::PermissionNotGranted);
         }
 
-        let (tx, rx) = mpsc::channel();
+        // Bounded (not `mpsc::channel()`): the Linux engine's PipeWire
+        // callback thread pushes frames into this channel unconditionally,
+        // independent of how fast `get_next_frame()` is drained downstream.
+        // An unbounded channel here means any transient slowdown in the
+        // consumer (encode/network backpressure) grows this queue without
+        // limit -- confirmed via heaptrack: ~1.44G leaked over a 25s run,
+        // entirely attributed to undrained `Frame` allocations queued from
+        // `engine::linux::process_callback`. A small bound applies real
+        // backpressure to the PipeWire iterate thread instead.
+        let (tx, rx) = mpsc::sync_channel(2);
         let engine = engine::Engine::new(&options, tx);
 
         Ok(Capturer { engine, rx })

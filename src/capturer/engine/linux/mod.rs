@@ -44,7 +44,7 @@ static STREAM_STATE_CHANGED_TO_ERROR: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct ListenerUserData {
-    pub tx: mpsc::Sender<Frame>,
+    pub tx: mpsc::SyncSender<Frame>,
     pub format: spa::param::video::VideoInfoRaw,
 }
 
@@ -182,7 +182,7 @@ fn process_callback(stream: &StreamRef, user_data: &mut ListenerUserData) {
 // TODO: Format negotiation
 fn pipewire_capturer(
     options: Options,
-    tx: mpsc::Sender<Frame>,
+    tx: mpsc::SyncSender<Frame>,
     ready_sender: &SyncSender<bool>,
     stream_id: u32,
 ) -> Result<(), LinCapError> {
@@ -326,7 +326,7 @@ pub struct LinuxCapturer {
 
 impl LinuxCapturer {
     // TODO: Error handling
-    pub fn new(options: &Options, tx: mpsc::Sender<Frame>) -> Self {
+    pub fn new(options: &Options, tx: mpsc::SyncSender<Frame>) -> Self {
         let connection =
             dbus::blocking::Connection::new_session().expect("Failed to create dbus connection");
         let stream_id = ScreenCastPortal::new(&connection)
@@ -373,6 +373,6 @@ impl LinuxCapturer {
     }
 }
 
-pub fn create_capturer(options: &Options, tx: mpsc::Sender<Frame>) -> LinuxCapturer {
+pub fn create_capturer(options: &Options, tx: mpsc::SyncSender<Frame>) -> LinuxCapturer {
     LinuxCapturer::new(options, tx)
 }
