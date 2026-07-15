@@ -13,7 +13,7 @@ use std::{cmp, time::Duration};
 use std::{
     os::windows,
     ptr::null_mut,
-    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
+    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender},
 };
 use windows_capture::{
     capture::{CaptureControl, Context, GraphicsCaptureApiHandler},
@@ -29,7 +29,7 @@ use windows_capture::{
 
 #[derive(Debug)]
 struct Capturer {
-    pub tx: mpsc::Sender<Frame>,
+    pub tx: mpsc::SyncSender<Frame>,
     pub crop: Option<Area>,
     pub start_time: (i64, SystemTime),
     pub perf_freq: i64,
@@ -116,7 +116,10 @@ impl GraphicsCaptureApiHandler for Capturer {
                     data: raw_frame_buffer.to_vec(),
                 };
 
-                let _ = self.tx.send(Frame::Video(VideoFrame::BGRA(bgr_frame)));
+                // try_send, not send: don't block the OS capture callback
+                // thread when the consumer is behind — drop the frame
+                // instead (same rationale as the Linux engine).
+                let _ = self.tx.try_send(Frame::Video(VideoFrame::BGRA(bgr_frame)));
             }
             None => {
                 // get raw frame buffer
@@ -134,7 +137,7 @@ impl GraphicsCaptureApiHandler for Capturer {
                     data: frame_data,
                 };
 
-                let _ = self.tx.send(Frame::Video(VideoFrame::BGRA(bgr_frame)));
+                let _ = self.tx.try_send(Frame::Video(VideoFrame::BGRA(bgr_frame)));
             }
         }
         Ok(())
@@ -172,7 +175,7 @@ impl WCStream {
 
 #[derive(Clone, Debug)]
 struct FlagStruct {
-    pub tx: mpsc::Sender<Frame>,
+    pub tx: mpsc::SyncSender<Frame>,
     pub crop: Option<Area>,
 }
 
@@ -184,7 +187,7 @@ pub enum CreateCapturerError {
 
 pub fn create_capturer(
     options: &Options,
-    tx: mpsc::Sender<Frame>,
+    tx: mpsc::SyncSender<Frame>,
 ) -> Result<WCStream, CreateCapturerError> {
     let target = options
         .target
@@ -380,7 +383,7 @@ fn build_audio_stream(
 }
 
 fn spawn_audio_stream(
-    tx: Sender<Frame>,
+    tx: SyncSender<Frame>,
     ready_tx: Sender<Result<(), CreateCapturerError>>,
     ctrl_rx: Receiver<AudioStreamControl>,
 ) {
@@ -445,8 +448,12 @@ fn spawn_audio_stream(
                 timestamp,
             );
 
-            if let Err(_) = tx.send(Frame::Audio(frame)) {
-                return;
+            match tx.try_send(Frame::Audio(frame)) {
+                Ok(()) => {}
+                // Consumer is behind: drop this sample under backpressure,
+                // keep the audio thread alive (matches video's try_send).
+                Err(mpsc::TrySendError::Full(_)) => {}
+                Err(mpsc::TrySendError::Disconnected(_)) => return,
             };
         }
     });

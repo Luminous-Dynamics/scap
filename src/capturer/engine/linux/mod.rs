@@ -142,35 +142,64 @@ fn process_callback(stream: &StreamRef, user_data: &mut ListenerUserData) {
             let _ = timestamp; // suppress "unused" warning until we wire pts elsewhere
             let display_time = SystemTime::now();
 
-            if let Err(e) = match user_data.format.format() {
-                VideoFormat::RGBx => user_data.tx.send(Frame::Video(VideoFrame::RGBx(RGBxFrame {
-                    display_time,
-                    width: frame_size.width as i32,
-                    height: frame_size.height as i32,
-                    data: frame_data,
-                }))),
-                VideoFormat::RGB => user_data.tx.send(Frame::Video(VideoFrame::RGB(RGBFrame {
-                    display_time,
-                    width: frame_size.width as i32,
-                    height: frame_size.height as i32,
-                    data: frame_data,
-                }))),
-                VideoFormat::xBGR => user_data.tx.send(Frame::Video(VideoFrame::XBGR(XBGRFrame {
-                    display_time,
-                    width: frame_size.width as i32,
-                    height: frame_size.height as i32,
-                    data: frame_data,
-                }))),
-                VideoFormat::BGRx => user_data.tx.send(Frame::Video(VideoFrame::BGRx(BGRxFrame {
-                    display_time,
-                    width: frame_size.width as i32,
-                    height: frame_size.height as i32,
-                    data: frame_data,
-                }))),
+            // `try_send`, not `send`: this callback runs on the same thread
+            // that `pipewire_capturer`'s loop uses to poll CAPTURER_STATE
+            // between `pw_loop.iterate()` calls. A blocking `send()` on a
+            // bounded channel would stall this thread whenever the consumer
+            // falls behind, and since `LinuxCapturer::stop_capture()` joins
+            // this exact thread, a full channel + a paused consumer would
+            // make `stop_capture()` hang forever. Dropping the frame under
+            // backpressure (rather than blocking the producer) keeps both
+            // the bounded-memory guarantee and a responsive stop path.
+            let send_result = match user_data.format.format() {
+                VideoFormat::RGBx => {
+                    user_data
+                        .tx
+                        .try_send(Frame::Video(VideoFrame::RGBx(RGBxFrame {
+                            display_time,
+                            width: frame_size.width as i32,
+                            height: frame_size.height as i32,
+                            data: frame_data,
+                        })))
+                }
+                VideoFormat::RGB => {
+                    user_data
+                        .tx
+                        .try_send(Frame::Video(VideoFrame::RGB(RGBFrame {
+                            display_time,
+                            width: frame_size.width as i32,
+                            height: frame_size.height as i32,
+                            data: frame_data,
+                        })))
+                }
+                VideoFormat::xBGR => {
+                    user_data
+                        .tx
+                        .try_send(Frame::Video(VideoFrame::XBGR(XBGRFrame {
+                            display_time,
+                            width: frame_size.width as i32,
+                            height: frame_size.height as i32,
+                            data: frame_data,
+                        })))
+                }
+                VideoFormat::BGRx => {
+                    user_data
+                        .tx
+                        .try_send(Frame::Video(VideoFrame::BGRx(BGRxFrame {
+                            display_time,
+                            width: frame_size.width as i32,
+                            height: frame_size.height as i32,
+                            data: frame_data,
+                        })))
+                }
                 _ => panic!("Unsupported frame format received"),
-            } {
-                eprintln!("{e}");
+            };
+
+            if let Err(mpsc::TrySendError::Disconnected(_)) = send_result {
+                eprintln!("Frame receiver disconnected");
             }
+            // TrySendError::Full is a silent intentional drop under
+            // backpressure — see comment above.
         }
     } else {
         eprintln!("Out of buffers");

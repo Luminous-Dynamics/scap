@@ -53,7 +53,7 @@ impl sc::stream::DelegateImpl for ErrorHandler {
 
 #[repr(C)]
 pub struct CapturerInner {
-    pub tx: mpsc::Sender<ChannelItem>,
+    pub tx: mpsc::SyncSender<ChannelItem>,
 }
 
 define_obj_type!(pub Capturer + StreamOutputImpl, CapturerInner, CAPTURER);
@@ -69,7 +69,10 @@ impl sc::stream::OutputImpl for Capturer {
         sample_buf: &mut cm::SampleBuf,
         kind: sc::OutputType,
     ) {
-        let _ = self.inner_mut().tx.send((sample_buf.retained(), kind));
+        // try_send, not send: don't block ScreenCaptureKit's delivery queue
+        // when the consumer is behind — drop the sample buffer instead
+        // (same rationale as the Linux/Windows engines).
+        let _ = self.inner_mut().tx.try_send((sample_buf.retained(), kind));
     }
 }
 
@@ -85,7 +88,7 @@ pub(crate) enum CreateCapturerError {
 
 pub(crate) fn create_capturer(
     options: &Options,
-    tx: mpsc::Sender<ChannelItem>,
+    tx: mpsc::SyncSender<ChannelItem>,
     error_flag: Arc<AtomicBool>,
 ) -> Result<(arc::R<Capturer>, arc::R<ErrorHandler>, arc::R<sc::Stream>), CreateCapturerError> {
     // If no target is specified, capture the main display
