@@ -196,7 +196,14 @@ fn process_callback(stream: &StreamRef, user_data: &mut ListenerUserData) {
             };
 
             if let Err(mpsc::TrySendError::Disconnected(_)) = send_result {
-                eprintln!("Frame receiver disconnected");
+                // The consumer (Capturer/rx) is gone, e.g. dropped without
+                // calling stop_capture(). Signal the main loop above to
+                // exit instead of spinning pw_loop.iterate() forever on a
+                // stream nobody will ever read from, and log it once (swap
+                // instead of store) rather than once per incoming frame.
+                if !STREAM_STATE_CHANGED_TO_ERROR.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("Frame receiver disconnected");
+                }
             }
             // TrySendError::Full is a silent intentional drop under
             // backpressure — see comment above.
