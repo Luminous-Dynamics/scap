@@ -40,7 +40,11 @@ mod error;
 mod portal;
 
 static CAPTURER_STATE: AtomicU8 = AtomicU8::new(0);
-static STREAM_STATE_CHANGED_TO_ERROR: AtomicBool = AtomicBool::new(false);
+// Signals pipewire_capturer's main loop to stop early. Set both on a
+// genuine PipeWire stream error and (see process_callback) when the frame
+// receiver has disconnected -- both are "the loop should end now"
+// conditions, so one flag models the intent accurately rather than two.
+static STREAM_SHOULD_EXIT: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct ListenerUserData {
@@ -85,7 +89,7 @@ fn state_changed_callback(
     match new {
         StreamState::Error(e) => {
             eprintln!("pipewire: State changed to error({e})");
-            STREAM_STATE_CHANGED_TO_ERROR.store(true, std::sync::atomic::Ordering::Relaxed);
+            STREAM_SHOULD_EXIT.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         _ => {}
     }
@@ -201,7 +205,7 @@ fn process_callback(stream: &StreamRef, user_data: &mut ListenerUserData) {
                 // exit instead of spinning pw_loop.iterate() forever on a
                 // stream nobody will ever read from, and log it once (swap
                 // instead of store) rather than once per incoming frame.
-                if !STREAM_STATE_CHANGED_TO_ERROR.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                if !STREAM_SHOULD_EXIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     eprintln!("Frame receiver disconnected");
                 }
             }
@@ -344,8 +348,8 @@ fn pipewire_capturer(
 
     // User has called Capturer::start() and we start the main loop
     while CAPTURER_STATE.load(std::sync::atomic::Ordering::Relaxed) == 1
-        && /* If the stream state got changed to `Error`, we exit. TODO: tell user that we exited */
-          !STREAM_STATE_CHANGED_TO_ERROR.load(std::sync::atomic::Ordering::Relaxed)
+        && /* Exit early on a PipeWire stream error or a disconnected frame receiver. TODO: tell user that we exited */
+          !STREAM_SHOULD_EXIT.load(std::sync::atomic::Ordering::Relaxed)
     {
         pw_loop.iterate(Duration::from_millis(100));
     }
@@ -405,7 +409,7 @@ impl LinuxCapturer {
             }
         }
         CAPTURER_STATE.store(0, std::sync::atomic::Ordering::Relaxed);
-        STREAM_STATE_CHANGED_TO_ERROR.store(false, std::sync::atomic::Ordering::Relaxed);
+        STREAM_SHOULD_EXIT.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

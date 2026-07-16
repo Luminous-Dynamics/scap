@@ -12,6 +12,11 @@ use crate::{
 
 pub use engine::get_output_frame_size;
 
+/// Capacity of the internal channel each platform engine sends `Frame`s
+/// (or `ChannelItem`s) through. See the comment at its use site in
+/// [`Capturer::build`] for why this is bounded at all.
+const FRAME_CHANNEL_CAPACITY: usize = 2;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub enum Resolution {
     _480p,
@@ -124,7 +129,7 @@ impl Capturer {
         // growing memory unboundedly or blocking the platform capture
         // thread (which on Linux would otherwise deadlock `stop_capture()`,
         // since it joins that same thread).
-        let (tx, rx) = mpsc::sync_channel(2);
+        let (tx, rx) = mpsc::sync_channel(FRAME_CHANNEL_CAPACITY);
         let engine = engine::Engine::new(&options, tx);
 
         Ok(Capturer { engine, rx })
