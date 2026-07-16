@@ -119,7 +119,12 @@ impl GraphicsCaptureApiHandler for Capturer {
                 // try_send, not send: don't block the OS capture callback
                 // thread when the consumer is behind — drop the frame
                 // instead (same rationale as the Linux engine).
-                let _ = self.tx.try_send(Frame::Video(VideoFrame::BGRA(bgr_frame)));
+                match self.tx.try_send(Frame::Video(VideoFrame::BGRA(bgr_frame))) {
+                    Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
+                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                        return Err("frame channel disconnected".into());
+                    }
+                }
             }
             None => {
                 // get raw frame buffer
