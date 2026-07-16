@@ -142,7 +142,12 @@ impl GraphicsCaptureApiHandler for Capturer {
                     data: frame_data,
                 };
 
-                let _ = self.tx.try_send(Frame::Video(VideoFrame::BGRA(bgr_frame)));
+                match self.tx.try_send(Frame::Video(VideoFrame::BGRA(bgr_frame))) {
+                    Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
+                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                        return Err("frame channel disconnected".into());
+                    }
+                }
             }
         }
         Ok(())
