@@ -376,6 +376,19 @@ pub struct LinuxCapturer {
 impl LinuxCapturer {
     // TODO: Error handling
     pub fn new(options: &Options, tx: mpsc::SyncSender<Frame>) -> Self {
+        // Same class of bug as STREAM_SHOULD_EXIT (see the reset in
+        // pipewire_capturer): CAPTURER_STATE is a process-wide static, and
+        // the only other writer is stop_capture(), which never runs if a
+        // previous LinuxCapturer's receiver was dropped instead of properly
+        // stopped. Left stale at 1 (or 2), a new instance's background
+        // thread would skip its "wait for start_capture()" gate below and
+        // start iterating immediately -- capturing before the caller ever
+        // called start_capture() on *this* instance. Reset synchronously
+        // here, before the background thread exists and before the caller
+        // can possibly call start_capture() on the handle this returns, so
+        // there's no race with either.
+        CAPTURER_STATE.store(0, std::sync::atomic::Ordering::Relaxed);
+
         let connection =
             dbus::blocking::Connection::new_session().expect("Failed to create dbus connection");
         let stream_id = ScreenCastPortal::new(&connection)
