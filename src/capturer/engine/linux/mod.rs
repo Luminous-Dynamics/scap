@@ -40,6 +40,7 @@ mod error;
 mod portal;
 
 static CAPTURER_STATE: AtomicU8 = AtomicU8::new(0);
+// NOTE: these are process-wide statics; the Linux backend assumes a single active capturer per process.
 // Signals pipewire_capturer's main loop to stop early. Set both on a
 // genuine PipeWire stream error and (see process_callback) when the frame
 // receiver has disconnected -- both are "the loop should end now"
