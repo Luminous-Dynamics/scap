@@ -205,7 +205,12 @@ fn process_callback(stream: &StreamRef, user_data: &mut ListenerUserData) {
                             data: frame_data,
                         })))
                 }
-                _ => panic!("Unsupported frame format received"),
+                _ => {
+                    if !STREAM_SHOULD_EXIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        eprintln!("Unsupported frame format received");
+                    }
+                    Ok(())
+                }
             };
 
             if let Err(mpsc::TrySendError::Disconnected(_)) = send_result {
