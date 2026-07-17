@@ -123,6 +123,14 @@ fn process_callback(stream: &StreamRef, user_data: &mut ListenerUserData) {
             if buffer.is_null() {
                 break 'outside;
             }
+            // Once STREAM_SHOULD_EXIT is set (stream error or disconnected
+            // receiver), the outer loop in pipewire_capturer is about to
+            // stop anyway -- skip the frame_data copy (the actual
+            // per-frame cost here) and everything after it, and just
+            // requeue the buffer below.
+            if STREAM_SHOULD_EXIT.load(std::sync::atomic::Ordering::Relaxed) {
+                break 'outside;
+            }
             let timestamp = unsafe { get_timestamp(buffer) };
 
             let n_datas = unsafe { (*buffer).n_datas };
