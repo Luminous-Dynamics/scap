@@ -235,6 +235,20 @@ fn pipewire_capturer(
     ready_sender: &SyncSender<bool>,
     stream_id: u32,
 ) -> Result<(), LinCapError> {
+    // STREAM_SHOULD_EXIT is a process-wide static; the only other writer
+    // is process_callback/state_changed_callback (both set it to `true`).
+    // Reset it here, before stream.connect() or any loop iteration, not
+    // just before the main capture loop below: connect()'s handshake can
+    // plausibly dispatch pipewire callbacks on this same thread before we
+    // ever call pw_loop.iterate() ourselves (MainLoop wraps pw_main_loop
+    // in an Rc, not Arc -- there is no separate background dispatch
+    // thread, so any dispatch that happens before our own iterate() calls
+    // must be happening synchronously inside calls like connect()).
+    // Resetting only right before the main loop (as an earlier commit did)
+    // would silently clear a real pre-start error or disconnect instead of
+    // letting it end the loop immediately, as it should.
+    STREAM_SHOULD_EXIT.store(false, std::sync::atomic::Ordering::Relaxed);
+
     pw::init();
 
     let mainloop = MainLoop::new(None)?;
@@ -354,15 +368,6 @@ fn pipewire_capturer(
     }
 
     let pw_loop = mainloop.loop_();
-
-    // STREAM_SHOULD_EXIT is a process-wide static: if a previous
-    // LinuxCapturer's receiver was dropped without stop_capture() being
-    // called, the flag is left set to `true` (stop_capture() is the only
-    // other place that resets it, and it never ran). Reset it here, right
-    // as this session's loop actually starts, so a new capture session
-    // doesn't inherit a stale exit signal and return immediately without
-    // ever iterating.
-    STREAM_SHOULD_EXIT.store(false, std::sync::atomic::Ordering::Relaxed);
 
     // User has called Capturer::start() and we start the main loop
     while CAPTURER_STATE.load(std::sync::atomic::Ordering::Relaxed) == 1
