@@ -216,7 +216,7 @@ pub(crate) fn create_capturer(
 
     let capturer = CapturerInner {
         tx,
-        disconnected: Arc::new(AtomicBool::new(false)),
+        disconnected: AtomicBool::new(false),
     };
 
     let queue = dispatch::Queue::serial_with_ar_pool();
