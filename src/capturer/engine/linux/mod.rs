@@ -346,6 +346,15 @@ fn pipewire_capturer(
 
     let pw_loop = mainloop.loop_();
 
+    // STREAM_SHOULD_EXIT is a process-wide static: if a previous
+    // LinuxCapturer's receiver was dropped without stop_capture() being
+    // called, the flag is left set to `true` (stop_capture() is the only
+    // other place that resets it, and it never ran). Reset it here, right
+    // as this session's loop actually starts, so a new capture session
+    // doesn't inherit a stale exit signal and return immediately without
+    // ever iterating.
+    STREAM_SHOULD_EXIT.store(false, std::sync::atomic::Ordering::Relaxed);
+
     // User has called Capturer::start() and we start the main loop
     while CAPTURER_STATE.load(std::sync::atomic::Ordering::Relaxed) == 1
         && /* Exit early on a PipeWire stream error or a disconnected frame receiver. TODO: tell user that we exited */
