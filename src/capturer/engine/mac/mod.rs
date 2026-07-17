@@ -60,7 +60,7 @@ pub struct CapturerInner {
     // here (unlike Windows' on_frame_arrived) to actually stop the
     // sc::Stream from this callback, so this is the same "flip a shared
     // flag" compromise used for the equivalent case on Linux/Windows.
-    disconnected: Arc<AtomicBool>,
+    disconnected: AtomicBool,
 }
 
 define_obj_type!(pub Capturer + StreamOutputImpl, CapturerInner, CAPTURER);
