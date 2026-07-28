@@ -1,3 +1,33 @@
+> ## ⚠️ This is a downstream fork, not the upstream project
+>
+> **Upstream is [CapSoftware/scap](https://github.com/CapSoftware/scap)** — all
+> credit for this library belongs there. It is MIT licensed, © Cap Software, Inc.,
+> and that license and copyright are preserved here unchanged.
+>
+> This copy is maintained by [Luminous Dynamics](https://github.com/Luminous-Dynamics)
+> for use by [xenia-peer](https://github.com/Luminous-Dynamics/xenia-peer). It exists
+> because the Linux PipeWire engine did not compile against the current two-level
+> `Frame::Video(VideoFrame::…)` enum, and because that engine's internal frame
+> channel was unbounded — under any downstream backpressure it grew without limit
+> (~1.44 GB of 1.47 GB leaked in a 25.76 s heaptrack repro).
+>
+> **Both fixes are offered upstream in [CapSoftware/scap#183](https://github.com/CapSoftware/scap/pull/183).**
+> We are not trying to compete with or replace upstream, and we would rather these
+> changes land there than live here.
+>
+> ### Downstream maintenance policy
+>
+> This is a *deliberately maintained* downstream, not an abandoned fork:
+>
+> - Consumers pin an **exact revision**, never this branch — a mutable pin is not a pin.
+> - Changes here stay minimal and are **upstreamed first**; we do not diverge casually.
+> - We track upstream and re-sync when it moves. As of this writing upstream `main`
+>   last moved 2025-08-05, which is why the fork exists at all rather than us simply
+>   waiting for a release.
+>
+> If you are looking for the real scap, **use upstream.** If you only need the Linux
+> fixes above, prefer PR #183 landing over depending on this repository.
+
 ![Github banner](./.github/banner.gif)
 
 [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white)](https://cap.link/discord)
