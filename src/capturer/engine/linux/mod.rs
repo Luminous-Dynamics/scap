@@ -39,18 +39,33 @@ use self::{error::LinCapError, portal::ScreenCastPortal};
 mod error;
 mod portal;
 
-/// Single source of truth for PipeWire video-format negotiation.
+/// The authoritative set of video formats advertised to PipeWire in
+/// `stream_params()`. Every entry must have a decode arm in
+/// [`video_frame_for`].
 ///
-/// These are the formats advertised to PipeWire in `stream_params()`, and
-/// every one of them **must** have a decode arm in [`video_frame_for`].
+/// Previously the advertised and decodable sets were maintained independently
+/// and disagreed in both directions: `RGBA` was advertised but had no decode
+/// arm, while `xBGR` had a decode arm but was never advertised. A compositor
+/// that selected `RGBA` therefore reached the fallback and panicked, despite
+/// scap having offered that format itself.
 ///
-/// Before 2026-07-29 the two lists silently disagreed: `RGBA` was advertised
-/// but had no decode arm, while `xBGR` had a decode arm but was never
-/// advertised. A compositor that picked `RGBA` therefore hit the fallback --
-/// originally a `panic!` inside a PipeWire callback, later a silent capture
-/// shutdown -- despite scap having offered that format itself. Advertising a
-/// format we cannot decode is always a bug, so keep these in lockstep;
-/// `every_advertised_format_has_a_decode_arm` fails the build if they drift.
+/// **What the tests below mechanically guarantee**, stated precisely because
+/// the two directions are not equally covered:
+///
+/// - `advertised => decodable` is enforced generally, for every entry here,
+///   by `every_advertised_format_has_a_decode_arm`. This is the direction
+///   that matters: advertising a format the engine cannot decode is what
+///   caused the panic.
+/// - `decodable => advertised` is **not** enforced generally. Only the
+///   historical `xBGR` omission is pinned, by
+///   `xbgr_is_both_decodable_and_advertised`. Adding a new arm to
+///   [`video_frame_for`] without adding it here would leave that format
+///   simply unnegotiable — harmless, but silent.
+///
+/// Closing the second direction properly would mean generating both this
+/// array and the dispatch from one declarative table, or enumerating every
+/// `VideoFormat`. Neither is warranted for the four formats this engine
+/// supports; add it here if the set grows.
 const SUPPORTED_VIDEO_FORMATS: [VideoFormat; 4] = [
     VideoFormat::RGB,
     VideoFormat::RGBx,
@@ -61,9 +76,9 @@ const SUPPORTED_VIDEO_FORMATS: [VideoFormat; 4] = [
 /// Build the [`VideoFrame`] for a negotiated `format`, or `None` when this
 /// engine has no decode arm for it.
 ///
-/// Split out of the `on_process` callback so the advertisement list above can
-/// be tested against the dispatch without a live PipeWire stream -- the two
-/// drifting apart is precisely the bug this function's test guards.
+/// Split out of the `on_process` callback so the advertised list above can be
+/// checked against the dispatch without a live PipeWire stream. See that
+/// list's docs for exactly which direction the tests enforce.
 fn video_frame_for(
     format: VideoFormat,
     display_time: SystemTime,
@@ -536,7 +551,8 @@ mod format_negotiation_tests {
     }
 
     /// `xBGR` had a decode arm but was never advertised, so it could never be
-    /// negotiated. Guards against silently losing it again.
+    /// negotiated. Pins that one historical omission -- it does NOT generalize
+    /// to "every decodable format is advertised", which no test here checks.
     #[test]
     fn xbgr_is_both_decodable_and_advertised() {
         assert!(sample(VideoFormat::xBGR).is_some());
