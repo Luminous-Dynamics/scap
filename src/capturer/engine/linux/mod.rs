@@ -39,6 +39,67 @@ use self::{error::LinCapError, portal::ScreenCastPortal};
 mod error;
 mod portal;
 
+/// Single source of truth for PipeWire video-format negotiation.
+///
+/// These are the formats advertised to PipeWire in `stream_params()`, and
+/// every one of them **must** have a decode arm in [`video_frame_for`].
+///
+/// Before 2026-07-29 the two lists silently disagreed: `RGBA` was advertised
+/// but had no decode arm, while `xBGR` had a decode arm but was never
+/// advertised. A compositor that picked `RGBA` therefore hit the fallback --
+/// originally a `panic!` inside a PipeWire callback, later a silent capture
+/// shutdown -- despite scap having offered that format itself. Advertising a
+/// format we cannot decode is always a bug, so keep these in lockstep;
+/// `every_advertised_format_has_a_decode_arm` fails the build if they drift.
+const SUPPORTED_VIDEO_FORMATS: [VideoFormat; 4] = [
+    VideoFormat::RGB,
+    VideoFormat::RGBx,
+    VideoFormat::xBGR,
+    VideoFormat::BGRx,
+];
+
+/// Build the [`VideoFrame`] for a negotiated `format`, or `None` when this
+/// engine has no decode arm for it.
+///
+/// Split out of the `on_process` callback so the advertisement list above can
+/// be tested against the dispatch without a live PipeWire stream -- the two
+/// drifting apart is precisely the bug this function's test guards.
+fn video_frame_for(
+    format: VideoFormat,
+    display_time: SystemTime,
+    width: i32,
+    height: i32,
+    data: Vec<u8>,
+) -> Option<VideoFrame> {
+    match format {
+        VideoFormat::RGBx => Some(VideoFrame::RGBx(RGBxFrame {
+            display_time,
+            width,
+            height,
+            data,
+        })),
+        VideoFormat::RGB => Some(VideoFrame::RGB(RGBFrame {
+            display_time,
+            width,
+            height,
+            data,
+        })),
+        VideoFormat::xBGR => Some(VideoFrame::XBGR(XBGRFrame {
+            display_time,
+            width,
+            height,
+            data,
+        })),
+        VideoFormat::BGRx => Some(VideoFrame::BGRx(BGRxFrame {
+            display_time,
+            width,
+            height,
+            data,
+        })),
+        _ => None,
+    }
+}
+
 static CAPTURER_STATE: AtomicU8 = AtomicU8::new(0);
 // NOTE: these are process-wide statics; the Linux backend assumes a single active capturer per process.
 // Signals pipewire_capturer's main loop to stop early. Set on both a
@@ -164,50 +225,25 @@ fn process_callback(stream: &StreamRef, user_data: &mut ListenerUserData) {
             // make `stop_capture()` hang forever. Dropping the frame under
             // backpressure (rather than blocking the producer) keeps both
             // the bounded-memory guarantee and a responsive stop path.
-            let send_result = match user_data.format.format() {
-                VideoFormat::RGBx => {
-                    user_data
-                        .tx
-                        .try_send(Frame::Video(VideoFrame::RGBx(RGBxFrame {
-                            display_time,
-                            width: frame_size.width as i32,
-                            height: frame_size.height as i32,
-                            data: frame_data,
-                        })))
-                }
-                VideoFormat::RGB => {
-                    user_data
-                        .tx
-                        .try_send(Frame::Video(VideoFrame::RGB(RGBFrame {
-                            display_time,
-                            width: frame_size.width as i32,
-                            height: frame_size.height as i32,
-                            data: frame_data,
-                        })))
-                }
-                VideoFormat::xBGR => {
-                    user_data
-                        .tx
-                        .try_send(Frame::Video(VideoFrame::XBGR(XBGRFrame {
-                            display_time,
-                            width: frame_size.width as i32,
-                            height: frame_size.height as i32,
-                            data: frame_data,
-                        })))
-                }
-                VideoFormat::BGRx => {
-                    user_data
-                        .tx
-                        .try_send(Frame::Video(VideoFrame::BGRx(BGRxFrame {
-                            display_time,
-                            width: frame_size.width as i32,
-                            height: frame_size.height as i32,
-                            data: frame_data,
-                        })))
-                }
-                _ => {
+            let send_result = match video_frame_for(
+                user_data.format.format(),
+                display_time,
+                frame_size.width as i32,
+                frame_size.height as i32,
+                frame_data,
+            ) {
+                Some(video_frame) => user_data.tx.try_send(Frame::Video(video_frame)),
+                None => {
+                    // Should be unreachable: PipeWire can only negotiate a
+                    // format we advertised, and everything advertised in
+                    // SUPPORTED_VIDEO_FORMATS has a decode arm. Kept as a
+                    // graceful stop rather than a panic because this runs
+                    // inside an FFI-driven callback.
                     if !STREAM_SHOULD_EXIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        eprintln!("Unsupported frame format received");
+                        eprintln!(
+                            "Unsupported frame format received: {:?}",
+                            user_data.format.format()
+                        );
                     }
                     Ok(())
                 }
@@ -287,15 +323,18 @@ fn pipewire_capturer(
         pw::spa::param::ParamType::EnumFormat,
         pw::spa::pod::property!(FormatProperties::MediaType, Id, MediaType::Video),
         pw::spa::pod::property!(FormatProperties::MediaSubtype, Id, MediaSubtype::Raw),
+        // Driven by SUPPORTED_VIDEO_FORMATS rather than a second hand-written
+        // list, so the set we advertise cannot drift from the set we can
+        // actually decode. `RGBA` used to appear here with no decode arm.
         pw::spa::pod::property!(
             FormatProperties::VideoFormat,
             Choice,
             Enum,
             Id,
-            pw::spa::param::video::VideoFormat::RGB,
-            pw::spa::param::video::VideoFormat::RGBA,
-            pw::spa::param::video::VideoFormat::RGBx,
-            pw::spa::param::video::VideoFormat::BGRx,
+            SUPPORTED_VIDEO_FORMATS[0],
+            SUPPORTED_VIDEO_FORMATS[1],
+            SUPPORTED_VIDEO_FORMATS[2],
+            SUPPORTED_VIDEO_FORMATS[3],
         ),
         pw::spa::pod::property!(
             FormatProperties::VideoSize,
@@ -456,4 +495,51 @@ impl LinuxCapturer {
 
 pub fn create_capturer(options: &Options, tx: mpsc::SyncSender<Frame>) -> LinuxCapturer {
     LinuxCapturer::new(options, tx)
+}
+
+#[cfg(test)]
+mod format_negotiation_tests {
+    use super::*;
+
+    fn sample(format: VideoFormat) -> Option<VideoFrame> {
+        video_frame_for(format, SystemTime::UNIX_EPOCH, 1, 1, vec![0u8; 4])
+    }
+
+    /// The regression this whole change exists for: anything we offer to
+    /// PipeWire must be something we can actually decode. Adding a format to
+    /// `SUPPORTED_VIDEO_FORMATS` without a matching arm in `video_frame_for`
+    /// fails here instead of at runtime on a user's compositor.
+    #[test]
+    fn every_advertised_format_has_a_decode_arm() {
+        for format in SUPPORTED_VIDEO_FORMATS {
+            assert!(
+                sample(format).is_some(),
+                "advertised format {format:?} has no decode arm in video_frame_for"
+            );
+        }
+    }
+
+    /// Pins the specific historical bug: `RGBA` was advertised for months
+    /// with no decode arm. It must stay out of the advertised set unless and
+    /// until a real `RGBA` arm exists.
+    #[test]
+    fn rgba_is_not_advertised_while_undecodable() {
+        assert!(
+            sample(VideoFormat::RGBA).is_none(),
+            "video_frame_for gained an RGBA arm -- add RGBA to SUPPORTED_VIDEO_FORMATS \
+             and delete this test"
+        );
+        assert!(
+            !SUPPORTED_VIDEO_FORMATS.contains(&VideoFormat::RGBA),
+            "RGBA is advertised but video_frame_for cannot decode it"
+        );
+    }
+
+    /// `xBGR` had a decode arm but was never advertised, so it could never be
+    /// negotiated. Guards against silently losing it again.
+    #[test]
+    fn xbgr_is_both_decodable_and_advertised() {
+        assert!(sample(VideoFormat::xBGR).is_some());
+        assert!(SUPPORTED_VIDEO_FORMATS.contains(&VideoFormat::xBGR));
+    }
 }
