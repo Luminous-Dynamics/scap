@@ -12,6 +12,11 @@ use crate::{
 
 pub use engine::get_output_frame_size;
 
+/// Capacity of the internal channel each platform engine sends `Frame`s
+/// (or `ChannelItem`s) through. See the comment at its use site in
+/// [`Capturer::build`] for why this is bounded at all.
+const FRAME_CHANNEL_CAPACITY: usize = 2;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub enum Resolution {
     _480p,
@@ -111,7 +116,20 @@ impl Capturer {
             return Err(CapturerBuildError::PermissionNotGranted);
         }
 
-        let (tx, rx) = mpsc::channel();
+        // Bounded (not `mpsc::channel()`): each platform's capture callback
+        // pushes frames into this channel unconditionally, independent of
+        // how fast `get_next_frame()` is drained downstream. An unbounded
+        // channel here means any transient slowdown in the consumer
+        // (encode/network backpressure) grows this queue without limit --
+        // confirmed via heaptrack on Linux: ~1.44GiB retained over a 25s run,
+        // entirely attributed to undrained `Frame` allocations queued from
+        // `engine::linux::process_callback`. Each engine sends with
+        // `try_send` (not blocking `send`) and drops the frame when this
+        // channel is full, so a slow consumer loses frames instead of
+        // growing memory unboundedly or blocking the platform capture
+        // thread (which on Linux would otherwise deadlock `stop_capture()`,
+        // since it joins that same thread).
+        let (tx, rx) = mpsc::sync_channel(FRAME_CHANNEL_CAPACITY);
         let engine = engine::Engine::new(&options, tx);
 
         Ok(Capturer { engine, rx })

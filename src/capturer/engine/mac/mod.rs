@@ -53,7 +53,14 @@ impl sc::stream::DelegateImpl for ErrorHandler {
 
 #[repr(C)]
 pub struct CapturerInner {
-    pub tx: mpsc::Sender<ChannelItem>,
+    pub tx: mpsc::SyncSender<ChannelItem>,
+    // Set once tx.try_send() observes a disconnected receiver, so later
+    // callbacks can skip the retain+send work entirely instead of repeating
+    // it with nowhere for the result to go. There's no return-an-error path
+    // here (unlike Windows' on_frame_arrived) to actually stop the
+    // sc::Stream from this callback, so this is the same "flip a shared
+    // flag" compromise used for the equivalent case on Linux/Windows.
+    disconnected: AtomicBool,
 }
 
 define_obj_type!(pub Capturer + StreamOutputImpl, CapturerInner, CAPTURER);
@@ -69,7 +76,27 @@ impl sc::stream::OutputImpl for Capturer {
         sample_buf: &mut cm::SampleBuf,
         kind: sc::OutputType,
     ) {
-        let _ = self.inner_mut().tx.send((sample_buf.retained(), kind));
+        let inner = self.inner_mut();
+        if inner
+            .disconnected
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+
+        // try_send, not send: don't block ScreenCaptureKit's delivery queue
+        // when the consumer is behind — drop the sample buffer instead
+        // (same rationale as the Linux/Windows engines).
+        if let Err(mpsc::TrySendError::Disconnected(_)) =
+            inner.tx.try_send((sample_buf.retained(), kind))
+        {
+            if !inner
+                .disconnected
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+            {
+                eprintln!("Frame receiver disconnected");
+            }
+        }
     }
 }
 
@@ -85,7 +112,7 @@ pub(crate) enum CreateCapturerError {
 
 pub(crate) fn create_capturer(
     options: &Options,
-    tx: mpsc::Sender<ChannelItem>,
+    tx: mpsc::SyncSender<ChannelItem>,
     error_flag: Arc<AtomicBool>,
 ) -> Result<(arc::R<Capturer>, arc::R<ErrorHandler>, arc::R<sc::Stream>), CreateCapturerError> {
     // If no target is specified, capture the main display
@@ -187,7 +214,10 @@ pub(crate) fn create_capturer(
     let error_handler = ErrorHandler::with(ErrorHandlerInner { error_flag });
     let stream = sc::Stream::with_delegate(&filter, &stream_config, error_handler.as_ref());
 
-    let capturer = CapturerInner { tx };
+    let capturer = CapturerInner {
+        tx,
+        disconnected: AtomicBool::new(false),
+    };
 
     let queue = dispatch::Queue::serial_with_ar_pool();
 

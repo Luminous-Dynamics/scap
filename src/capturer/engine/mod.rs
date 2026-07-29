@@ -58,7 +58,7 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn new(options: &Options, tx: mpsc::Sender<ChannelItem>) -> Engine {
+    pub fn new(options: &Options, tx: mpsc::SyncSender<ChannelItem>) -> Engine {
         #[cfg(target_os = "macos")]
         {
             let error_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
